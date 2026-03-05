@@ -68,3 +68,40 @@ When sending the `POST` request to exchange the code for the token, there were p
 
 **Correction:**
 We verified that the token endpoint receives properly formatted data (via `URLSearchParams`) in `app/api/v1/epic/[action]/route.ts`, solidifying the `client_assertion_type` parameter distinctly as `"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"` and attaching the corrected signed JWT as the `client_assertion`.
+
+---
+
+## Patient Resource Integration Updates
+
+Following the initial authentication implementation, several specific requirements from the Epic FHIR API were identified when interacting with the Patient resource.
+
+### 1. Patient Creation (Missing Identifier)
+
+**Mistake:**
+When attempting to `POST` to the Patient creation endpoint, Epic rejected the payload with a `required` code error indicating a missing `identifier(ssn)`. Early payloads did not include a Social Security Number, which Epic considers a vital required field for patient matching or creation.
+
+**Correction:**
+
+1. The frontend form (`app/components/AddPatientModal.tsx`) was updated to explicitly prompt for an SSN.
+2. The `POST /api/v1/epic/create-patient` backend handler was updated to parse `ssn` and actively push an `identifier` object into the FHIR payload:
+   ```json
+   "identifier": [
+     {
+       "use": "official",
+       "system": "urn:oid:2.16.840.1.113883.4.1",
+       "value": "<cleaned_ssn>"
+     }
+   ]
+   ```
+
+### 2. Patient Demographics Search (Strict Parameters)
+
+**Mistake:**
+Standard searches utilizing basic `name` or general queries resulted in unoptimized or entirely rejected responses from Epic's backend. Epic specifically expects strict query parameters for name matching (e.g., `given`, `family`) and strictly limits return payloads to a requested `_count`.
+
+**Correction:**
+The patient search API (`GET /api/v1/epic/patients`) was refactored:
+
+- The generic `name` parameter was explicitly mapped to `given` in the search parameters.
+- Optional fallback parameters (like a default `family` or hardcoded `given` name defaults like "Awal") were configured for testing.
+- The `_count` was explicitly restricted from standard queries (e.g., down to `20`) to ensure response times stay consistently fast and avoid timeout or payload limit rejections from Epic servers.
