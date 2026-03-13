@@ -92,7 +92,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
       console.log("GENERATE: generating accession");
       const clientAssertion = await createClientAssertion();
-      console.log("CLIENT ASSERTION:", code);
+      // console.log("CLIENT ASSERTION:", code);
       console.log("[REDIRECT] Exchanging code for token...");
 
       const tokenResponse = await fetch(EPIC_ENDPOINTS.OAUTH.TOKEN, {
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
       const tokenData = await tokenResponse.json();
 
-      console.log("[REDIRECT] Token response status:", tokenResponse);
+      // console.log("[REDIRECT] Token response status:", tokenResponse);
 
       if (!tokenResponse.ok) {
         return NextResponse.json(
@@ -166,7 +166,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         searchParams["_count"] = req.nextUrl.searchParams.get("_count") || "20";
         // searchParams["birthdate"] = req.nextUrl.searchParams.get("birthdate") || "1999-10-05";
 
-        console.log("[PATIENTS] Searching for patients with params:", EPIC_ENDPOINTS.FHIR.PATIENT_SEARCH(searchParams));
+        // console.log("[PATIENTS] Searching for patients with params:", EPIC_ENDPOINTS.FHIR.PATIENT_SEARCH(searchParams));
 
         const fhirResponse = await fetch(
           EPIC_ENDPOINTS.FHIR.PATIENT_SEARCH(searchParams),
@@ -306,7 +306,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           },
         );
 
-        console.log("[CREATE_PATIENT] FHIR response:", fhirResponse);
+        // console.log("[CREATE_PATIENT] FHIR response:", fhirResponse);
         const rawText = await fhirResponse.text();
         let data;
         try {
