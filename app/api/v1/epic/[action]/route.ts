@@ -1,6 +1,8 @@
 import { generatePKCE } from "@/app/utils/pkce";
-import { EPIC, EPIC_ENDPOINTS } from "@/constant/server/epic";
+import { EPIC } from "@/constant/server/epic";
+import { getSmartConfig } from "@/app/utils/smartDiscovery";
 import { NextRequest, NextResponse } from "next/server";
+import { verifyIdToken } from "@/app/utils/verifyIdToken";
 
 interface RouteParams {
   params: {
@@ -15,24 +17,43 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     case EPIC.OAUTH_ACTIONS.AUTHORIZE: {
       const { codeVerifier, codeChallenge } = generatePKCE();
       const state = crypto.randomUUID();
+      const nonce = crypto.randomUUID();
 
-      console.log("[AUTHORIZE] Starting OAuth flow");
-      console.log("[AUTHORIZE] Client ID:", process.env.EPIC_APP_CLIENT_ID);
-      console.log("[AUTHORIZE] Redirect URI:", process.env.EPIC_APP_REDIRECT_URI);
-      console.log("[AUTHORIZE] FHIR Base:", process.env.EPIC_FHIR_BASE);
+      const smartConfig = await getSmartConfig(
+        process.env.EPIC_FHIR_BASE!
+      );
 
-      // Store verifier and state in cookies (required for validation)
+      const authorizationUrl = new URL(
+        smartConfig.authorization_endpoint
+      );
+
+      authorizationUrl.searchParams.set("response_type", "code");
+      authorizationUrl.searchParams.set(
+        "client_id",
+        process.env.EPIC_APP_CLIENT_ID!
+      );
+      authorizationUrl.searchParams.set(
+        "redirect_uri",
+        process.env.EPIC_APP_REDIRECT_URI!
+      );
+      authorizationUrl.searchParams.set(
+        "scope",
+        "launch openid profile fhirUser offline_access patient/Patient.read patient/MedicationRequest.read patient/Observation.read"
+      );
+      authorizationUrl.searchParams.set(
+        "aud",
+        process.env.EPIC_FHIR_BASE!
+      );
+      authorizationUrl.searchParams.set("state", state);
+      authorizationUrl.searchParams.set("nonce", nonce);
+      authorizationUrl.searchParams.set("code_challenge", codeChallenge);
+      authorizationUrl.searchParams.set(
+        "code_challenge_method",
+        "S256"
+      );
+
       const response = NextResponse.redirect(
-        EPIC_ENDPOINTS.OAUTH.AUTHORIZE({
-          response_type: "code",
-          client_id: process.env.EPIC_APP_CLIENT_ID,
-          redirect_uri: process.env.EPIC_APP_REDIRECT_URI,
-          scope: "launch openid profile fhirUser offline_access patient/*.read",
-          aud: process.env.EPIC_FHIR_BASE,
-          state: state,
-          code_challenge: codeChallenge,
-          code_challenge_method: "S256",
-        }),
+        authorizationUrl.toString()
       );
 
       response.cookies.set("pkce_verifier", codeVerifier, {
@@ -46,7 +67,14 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
-        maxAge: 600, 
+        maxAge: 600,
+      });
+
+      response.cookies.set("oauth_nonce", nonce, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 600,
       });
 
       return response;
@@ -56,90 +84,103 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       const code = req.nextUrl.searchParams.get("code");
       const returnedState = req.nextUrl.searchParams.get("state");
       const error = req.nextUrl.searchParams.get("error");
-      const errorDescription = req.nextUrl.searchParams.get("error_description");
-
-      console.log("[REDIRECT] Received callback");
-      console.log("[REDIRECT] Code:", code ? "present" : "missing");
-      console.log("[REDIRECT] State:", returnedState);
-      console.log("[REDIRECT] Error:", error);
 
       if (error) {
-        console.error("[REDIRECT] OAuth error:", error, errorDescription);
-        return NextResponse.json(
-          { error, error_description: errorDescription },
-          { status: 400 },
-        );
+        return NextResponse.json({ error }, { status: 400 });
       }
 
       if (!code) {
         return NextResponse.json(
           { error: "Authorization code missing" },
-          { status: 400 },
+          { status: 400 }
         );
       }
 
       const storedState = req.cookies.get("oauth_state")?.value;
       const codeVerifier = req.cookies.get("pkce_verifier")?.value;
-
-      console.log("[REDIRECT] Stored state:", storedState);
-      console.log("[REDIRECT] Code verifier:", codeVerifier ? "present" : "missing");
+      const storedNonce = req.cookies.get("oauth_nonce")?.value;
 
       if (!storedState || storedState !== returnedState) {
-        console.error("[REDIRECT] State mismatch!");
         return NextResponse.json(
-          { 
-            error: "Invalid state parameter",
-            stored: storedState,
-            received: returnedState
-          },
-          { status: 400 },
+          { error: "Invalid state parameter" },
+          { status: 400 }
         );
       }
 
       if (!codeVerifier) {
-        console.error("[REDIRECT] Missing PKCE verifier!");
         return NextResponse.json(
           { error: "Missing PKCE verifier" },
-          { status: 400 },
+          { status: 400 }
         );
       }
 
-      console.log("[REDIRECT] Exchanging code for token...");
+      const smartConfig = await getSmartConfig(
+        process.env.EPIC_FHIR_BASE!
+      );
 
-      const tokenResponse = await fetch(EPIC_ENDPOINTS.OAUTH.TOKEN, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          grant_type: "authorization_code",
-          code,
-          redirect_uri: process.env.EPIC_APP_REDIRECT_URI!,
-          client_id: process.env.EPIC_APP_CLIENT_ID!,
-          code_verifier: codeVerifier,
-        }),
-      });
+      const tokenResponse = await fetch(
+        smartConfig.token_endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri:
+              process.env.EPIC_APP_REDIRECT_URI!,
+            client_id:
+              process.env.EPIC_APP_CLIENT_ID!,
+            code_verifier: codeVerifier,
+          }),
+        }
+      );
 
       const tokenData = await tokenResponse.json();
+      const patientId = tokenData.patient;
 
-      console.log("[REDIRECT] Token response status:", tokenResponse.status);
-      console.log("[REDIRECT] Token data:", tokenData);
+      console.log("Patient data", tokenData);
 
       if (!tokenResponse.ok) {
         return NextResponse.json(
           { error: "Token exchange failed", details: tokenData },
-          { status: tokenResponse.status },
+          { status: tokenResponse.status }
         );
       }
 
-      // Clear cookies after successful authentication
-      const response = NextResponse.json(tokenData);
+      if (tokenData.id_token) {
+        const verifiedPayload = await verifyIdToken(
+          tokenData.id_token,
+          smartConfig.issuer,
+          process.env.EPIC_APP_CLIENT_ID!,
+          smartConfig.jwks_uri
+        );
+
+        if (verifiedPayload.nonce !== storedNonce) {
+          return NextResponse.json(
+            { error: "Invalid nonce" },
+            { status: 400 }
+          );
+        }
+      }
+
+      const response = NextResponse.json({
+        message: "Authentication successful",
+      });
+
       response.cookies.delete("oauth_state");
       response.cookies.delete("pkce_verifier");
+      response.cookies.delete("oauth_nonce");
 
       return response;
     }
+
     default:
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid action" },
+        { status: 400 }
+      );
   }
 }
