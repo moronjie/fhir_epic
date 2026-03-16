@@ -13,6 +13,13 @@ const EPIC_ENDPOINTS = {
             query ? `${EPIC_FHIR_BASE}/Patient?${qs.stringify(query)}` : `${EPIC_FHIR_BASE}/Patient`,
         PATIENT_READ: (id: string) => `${EPIC_FHIR_BASE}/Patient/${id}`,
         PATIENT_CREATE: `${EPIC_FHIR_BASE}/Patient`,
+        APPOINTMENT_SEARCH: (query?: Record<string, string>) =>
+            query ? `${EPIC_FHIR_BASE}/Appointment?${qs.stringify(query)}` : `${EPIC_FHIR_BASE}/Appointment`,
+        CONDITION_SEARCH: (query?: Record<string, string>) =>
+            query ? `${EPIC_FHIR_BASE}/Condition?${qs.stringify(query)}` : `${EPIC_FHIR_BASE}/Condition`,
+        CONDITION_CREATE: `${EPIC_FHIR_BASE}/Condition`,
+        DIAGNOSTIC_REPORT_SEARCH: (query?: Record<string, string>) =>
+            query ? `${EPIC_FHIR_BASE}/DiagnosticReport?${qs.stringify(query)}` : `${EPIC_FHIR_BASE}/DiagnosticReport`,
     }
 }
 
@@ -24,7 +31,12 @@ const EPIC = {
     },
     FHIR_ACTIONS: {
         PATIENTS: 'patients',
+        GET_PATIENT: 'get-patient',
         CREATE_PATIENT: 'create-patient',
+        GET_APPOINTMENTS: 'get-appointments',
+        GET_CONDITIONS: 'get-conditions',
+        CREATE_CONDITION: 'create-condition',
+        GET_REPORTS: 'get-reports',
     }
 }
 

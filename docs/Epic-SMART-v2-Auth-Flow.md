@@ -105,3 +105,10 @@ The patient search API (`GET /api/v1/epic/patients`) was refactored:
 - The generic `name` parameter was explicitly mapped to `given` in the search parameters.
 - Optional fallback parameters (like a default `family` or hardcoded `given` name defaults like "Awal") were configured for testing.
 - The `_count` was explicitly restricted from standard queries (e.g., down to `20`) to ensure response times stay consistently fast and avoid timeout or payload limit rejections from Epic servers.
+
+**NOTES:**
+
+- The epic fhir system do not allow fetching all patients at once. We have to fetch patients in batches.
+- The epic fhir system do not allow fetching patients with empty name or family. We have to provide a name or family to fetch patients.
+- The epic fhir do not also allow searching with ssn unless special previliges are granted.
+- To get pateints list we have to fetch the records using a work around. when we create a patient we add his patient id into db and then fetch the records using the patient id. The Epic system allows fetching in bundles, this gives us performance boost.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import AddPatientModal from "@/app/components/AddPatientModal";
 
 interface PatientEntry {
@@ -32,7 +33,7 @@ export default function PatientsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/v1/epic/patients?_count=20");
+      const res = await fetch(`/api/v1/epic/patients`);
       if (res.status === 401) {
         window.location.href = "/";
         return;
@@ -53,6 +54,7 @@ export default function PatientsPage() {
     }
   }, []);
 
+  // Initial fetch
   useEffect(() => {
     fetchPatients();
   }, [fetchPatients]);
@@ -210,7 +212,7 @@ export default function PatientsPage() {
           </p>
           <p className="mt-1 text-sm text-red-500">{error}</p>
           <button
-            onClick={fetchPatients}
+            onClick={() => fetchPatients()}
             className="mt-4 rounded-xl bg-red-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
           >
             Retry
@@ -284,9 +286,10 @@ export default function PatientsPage() {
               (entry.resource.id?.charCodeAt(0) || 0) % colors.length;
 
             return (
-              <div
+              <Link
+                href={`/dashboard/patients/${entry.resource.id}`}
                 key={entry.resource.id}
-                className="group flex flex-col gap-2 border-b border-[var(--color-border)] px-6 py-4 transition-colors last:border-b-0 hover:bg-[var(--color-surface-hover)] sm:grid sm:grid-cols-12 sm:items-center sm:gap-4"
+                className="group flex flex-col gap-2 border-b border-[var(--color-border)] px-6 py-4 transition-colors last:border-b-0 hover:bg-[var(--color-surface-hover)] sm:grid sm:grid-cols-12 sm:items-center sm:gap-4 block"
               >
                 {/* Patient name + avatar */}
                 <div className="col-span-4 flex items-center gap-3">
@@ -329,7 +332,7 @@ export default function PatientsPage() {
                     {entry.resource.id}
                   </span>
                 </div>
-              </div>
+              </Link>
             );
           })}
 
