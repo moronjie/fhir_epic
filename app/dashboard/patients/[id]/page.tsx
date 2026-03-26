@@ -47,7 +47,7 @@ export default function PatientDetailsPage({ params }: { params: Promise<{ id: s
       // Fetch Clinical Data in parallel
       const [aptRes, condRes, repRes] = await Promise.all([
         fetch(`/api/v1/epic/get-appointments?patient=${patientId}`),
-        fetch(`/api/v1/epic/get-conditions?patient=${patientId}`),
+        fetch(`/api/v1/epic/get-conditions?patient=${patientId}&category=problem-list-item`),
         fetch(`/api/v1/epic/get-reports?patient=${patientId}`)
       ]);
 

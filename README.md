@@ -1,37 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# fhir_epic
 
-## Getting Started
+Next.js app that connects to Epic's FHIR R4 APIs using SMART on FHIR v2 (OAuth2 + PKCE + private_key_jwt).
 
-First, run the development server:
+More detail on the auth flow lives in `docs/Epic-SMART-v2-Auth-Flow.md`.
+
+## Quickstart
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Create a `.env` (start from `example.env`) and ensure `app/utils/keys/private.pem` matches the JWK you registered with Epic (see `app/utils/keys/jwks.json`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `EPIC_APP_CLIENT_ID`
+- `EPIC_APP_REDIRECT_URI`
+- `EPIC_FHIR_BASE` (defaults to Epic sandbox R4 base if omitted)
+- `EPIC_JWK_KID` (optional; set if Epic expects a `kid` on the client assertion JWT)
 
-## Learn More
+## API routes
 
-To learn more about Next.js, take a look at the following resources:
+All routes are under `/api/v1/epic/:action` (see `constant/server/epic.ts`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `GET /api/v1/epic/authorize` starts OAuth and sets PKCE cookies.
+- `GET /api/v1/epic/redirect?code=...&state=...` exchanges for an access token and sets the `epic_token` cookie.
+- `GET /api/v1/epic/patients` returns a FHIR `Bundle` of Patients whose IDs are stored locally.
+- `GET /api/v1/epic/get-patient?id=<patientId>` reads a single patient.
+- `GET /api/v1/epic/get-appointments?patient=<patientId>` searches Appointments for a patient.
+- `GET /api/v1/epic/get-conditions?patient=<patientId>&category=problem-list-item` searches Conditions for a patient.
+- `GET /api/v1/epic/get-reports?patient=<patientId>` searches DiagnosticReports for a patient.
+- `POST /api/v1/epic/create-patient` creates a patient (and stores the created id locally).
+- `POST /api/v1/epic/create-condition` creates a condition for a patient.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Note: there is currently **no** API endpoint in this app to create a `DiagnosticReport` (reports are read-only via `get-reports`).
 
-## Deploy on Vercel
+## Local patient cache
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Created Patient IDs are inserted into a local SQLite DB at `data/epic_patients.db` (`lib/db.ts`). The `/api/v1/epic/patients` endpoint reads those IDs, calls `GET Patient/{id}` for each one, and returns a synthetic searchset Bundle for the UI.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# fhir_epic
+## Problems encountered (patients & conditions)
+
+### Creating patients
+
+- Epic can reject Patient creates without an SSN identifier; this project sends `identifier.system = urn:oid:2.16.840.1.113883.4.1` from the `ssn` field.
+- The Patient create response can be `201` with an empty/partial body; the created id is often only in the `Location` header (or a `location` field depending on how the response is parsed). `create-patient` now extracts the id from both places before writing to SQLite.
+
+### Fetching patients
+
+- Epic does not provide a simple “list all patients” flow for this use case, and searches with empty demographics are typically rejected/limited.
+- A FHIR `batch` Bundle approach was unreliable in practice; the current implementation reads stored IDs from SQLite and does individual `GET Patient/{id}` calls instead.
+
+### Adding/fetching conditions
+
+- Missing SMART scopes can block Condition reads/writes; `authorize` now requests `user/Condition.read user/Condition.search user/Condition.write` (in addition to Patient/Appointment scopes).
+- Condition creates can succeed but searches can return `total: 0` unless you search the right slice. The UI defaults to `category=problem-list-item`, and the API forces `clinical-status=active` server-side to reliably return newly-created “active” entries.
+- Epic can return `201` with no JSON body for Condition create. `create-condition` now echoes the response `Location` header back to the frontend as `fhirId` so you can confirm the created resource id.

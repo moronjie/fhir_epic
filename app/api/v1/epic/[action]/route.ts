@@ -25,7 +25,8 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
           response_type: "code",
           client_id: process.env.EPIC_APP_CLIENT_ID,
           redirect_uri: process.env.EPIC_APP_REDIRECT_URI,
-          scope: "openid fhirUser launch offline_access user/Patient.read user/Patient.write user/Appointment.read",          
+          // scope: "openid fhirUser launch offline_access user/Patient.read user/Patient.write user/Appointment.read",
+          scope: "openid fhirUser launch offline_access user/Patient.read user/Patient.write user/Appointment.read user/Condition.read user/Condition.search user/Condition.write",
           aud: process.env.EPIC_FHIR_BASE,
           state: state,
           code_challenge: codeChallenge,
@@ -103,13 +104,13 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-                  grant_type: "authorization_code",
-                  code,
-                  redirect_uri: process.env.EPIC_APP_REDIRECT_URI!,
-                  client_id: process.env.EPIC_APP_CLIENT_ID!,
-                  code_verifier: codeVerifier,
-                  client_assertion_type:"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                  client_assertion: clientAssertion,
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: process.env.EPIC_APP_REDIRECT_URI!,
+          client_id: process.env.EPIC_APP_CLIENT_ID!,
+          code_verifier: codeVerifier,
+          client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+          client_assertion: clientAssertion,
         }),
       });
 
@@ -160,74 +161,43 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       }
 
       try {
-        // 1. Fetch all patient IDs from the local SQLite DB
         const stmt = db.prepare('SELECT id FROM patients ORDER BY created_at DESC');
         const rows = stmt.all() as { id: string }[];
-        
+
         if (rows.length === 0) {
           return NextResponse.json({ entry: [] });
         }
 
-        // 2. Construct the FHIR Bundle request
-        const bundle = {
+        const patients: any[] = [];
+
+        for (const row of rows) {
+          try {
+            const res = await fetch(`${process.env.EPIC_FHIR_BASE}/Patient/${row.id}`, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: "application/fhir+json",
+              },
+            });
+
+            const data = await res.json().catch(() => null);
+            if (res.ok && data) {
+              patients.push({
+                fullUrl: `urn:uuid:${row.id}`,
+                resource: data,
+              });
+            } else {
+              console.warn(`Failed to fetch patient ${row.id}`, data);
+            }
+          } catch (err) {
+            console.error(`Error fetching patient ${row.id}`, err);
+          }
+        }
+
+        return NextResponse.json({
           resourceType: "Bundle",
-          type: "batch",
-          entry: rows.map((row) => ({
-            request: {
-              method: "GET",
-              url: `Patient/${row.id}`,
-            },
-          })),
-        };
-
-        // console.log("[PATIENTS_BATCH] Sending bundle for", rows.length, "patients");
-
-        // 3. Send bulk request to Epic
-        const fhirResponse = await fetch(process.env.EPIC_FHIR_BASE!, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/fhir+json",
-            Accept: "application/fhir+json",
-          },
-          body: JSON.stringify(bundle),
-        });
-
-        const rawText = await fhirResponse.text();
-
-        let data;
-        try {
-          data = rawText ? JSON.parse(rawText) : null;
-        } catch (e) {
-          console.error("[PATIENTS_BATCH] Failed to parse JSON. Raw body:", rawText);
-        }
-
-        if (!fhirResponse.ok) {
-          console.error(`[PATIENTS_BATCH] Request failed with status ${fhirResponse.status}:`, data);
-          return NextResponse.json(
-            { error: "FHIR batch request failed", details: data },
-            { status: fhirResponse.status },
-          );
-        }
-
-        // 4. Extract resources from the bundle response
-        // Epic returns a Bundle of type "batch-response"
-        // Each entry has a 'resource' if successful, or 'response' with status/error
-        let extractedEntries: any[] = [];
-        if (data && data.entry) {
-          extractedEntries = data.entry
-            .filter((e: any) => e.resource && e.resource.resourceType === "Patient")
-            .map((e: any) => ({
-              fullUrl: e.fullUrl || `urn:uuid:${e.resource.id}`,
-              resource: e.resource
-            }));
-        }
-
-        return NextResponse.json({ 
-          resourceType: "Bundle", 
-          type: "searchset", 
-          total: extractedEntries.length, 
-          entry: extractedEntries 
+          type: "searchset",
+          total: patients.length,
+          entry: patients,
         });
       } catch (err: any) {
         console.error("[PATIENTS_BATCH] Error:", err);
@@ -313,21 +283,59 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     case EPIC.FHIR_ACTIONS.GET_CONDITIONS: {
       const accessToken = req.cookies.get("epic_token")?.value;
+
       if (!accessToken) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
       try {
         const patientId = req.nextUrl.searchParams.get("patient");
         if (!patientId) return NextResponse.json({ error: "Missing patient ID" }, { status: 400 });
-        // Epic typically requires category or clinical-status for generic condition searches, but we'll try just patient first
-        const params: Record<string, string> = { patient: patientId };
-        const category = req.nextUrl.searchParams.get("category");
-        if (category) params["category"] = category;
-        const fhirResponse = await fetch(EPIC_ENDPOINTS.FHIR.CONDITION_SEARCH(params), {
-          headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/fhir+json" }
+
+        // 1. Build parameters based on the reference docs
+        // We default to problem-list-item because that is the most reliable for self-created data
+        const categoryParam = req.nextUrl.searchParams.get("category") || "problem-list-item";
+
+        const params: Record<string, string> = {
+          patient: patientId,
+          category: categoryParam
+        };
+
+        // 2. Add clinical-status. Epic search often returns 0 results for 
+        // new entries if the 'active' status isn't explicitly requested.
+        params["clinical-status"] = "active";
+
+        const searchUrl = EPIC_ENDPOINTS.FHIR.CONDITION_SEARCH(params);
+        console.log('[GET_CONDITIONS] Fetching URL:', searchUrl);
+
+        const fhirResponse = await fetch(searchUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/fhir+json"
+          }
         });
-        const data = await fhirResponse.text().then(t => t ? JSON.parse(t) : null).catch(() => null);
-        if (!fhirResponse.ok) return NextResponse.json({ error: "FHIR request failed", details: data }, { status: fhirResponse.status });
+
+        const rawText = await fhirResponse.text();
+
+        let data = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : null;
+        } catch (e) {
+          console.error("[GET_CONDITIONS] JSON Parse Error", e);
+        }
+
+        if (!fhirResponse.ok) {
+          return NextResponse.json({ error: "FHIR request failed", details: data }, { status: fhirResponse.status });
+        }
+
+        // 3. Logic Check: If total is 0, Epic might have indexed it as a health-concern instead
+        if (data?.total === 0 && categoryParam === "problem-list-item") {
+          console.log("No Problem List items found, retrying with health-concern...");
+          // You could optionally perform a second fetch here or return the 0 to the front-end
+        }
+
         return NextResponse.json(data);
+
       } catch (err: any) {
+        console.error('[GET_CONDITIONS] Catch Error:', err);
         return NextResponse.json({ error: "Failed to fetch conditions", message: err.message }, { status: 500 });
       }
     }
@@ -451,6 +459,8 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           },
         );
 
+        // console.log("[CREATE_PATIENT] FHIR response:", fhirResponse);
+
         const rawText = await fhirResponse.text();
         let data;
         try {
@@ -475,22 +485,26 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         // E.g. data.location or via Location header.
         const locationHeader = fhirResponse.headers.get("location");
         let newPatientId = "";
-        
+
         if (locationHeader) {
-          const parts = locationHeader.split("/Patient/");
-          if (parts.length > 1) {
-            newPatientId = parts[1].split("/")[0];
-          }
-        } 
-        
-        if (!newPatientId && data?.location) {
-            // Sometime it's in data.location depending on how it's parsed
-            const parts = String(data.location).split("/Patient/");
+          if (locationHeader.startsWith("Patient/")) {
+            newPatientId = locationHeader.replace("Patient/", "").split("/")[0];
+          } else {
+            const parts = locationHeader.split("/Patient/");
             if (parts.length > 1) {
               newPatientId = parts[1].split("/")[0];
-            } else {
-              newPatientId = String(data.location); 
             }
+          }
+        }
+
+        if (!newPatientId && data?.location) {
+          // Sometime it's in data.location depending on how it's parsed
+          const parts = String(data.location).split("/Patient/");
+          if (parts.length > 1) {
+            newPatientId = parts[1].split("/")[0];
+          } else {
+            newPatientId = String(data.location);
+          }
         }
 
         if (!newPatientId && data?.id) {
@@ -503,13 +517,13 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
             stmt.run(newPatientId);
             console.log(`[CREATE_PATIENT] Saved patient ID to DB: ${newPatientId}`);
           } catch (dbErr: any) {
-             // Handle UNIQUE constraint failure gracefully (if we somehow double-create)
+            // Handle UNIQUE constraint failure gracefully (if we somehow double-create)
             if (dbErr.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') {
               console.error("[CREATE_PATIENT] Failed to save patient ID to local DB:", dbErr);
             }
           }
         } else {
-            console.warn("[CREATE_PATIENT] Could not extract Patient ID from creation response. Data:", JSON.stringify(data).slice(0, 100));
+          console.warn("[CREATE_PATIENT] Could not extract Patient ID from creation response. Data:", JSON.stringify(data).slice(0, 100));
         }
 
         return NextResponse.json(data, { status: 201 });
@@ -537,27 +551,42 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
         }
 
-        // Build FHIR Condition resource
+        // Build FHIR Condition resource to match Epic Documentation exactly
         const conditionResource: any = {
           resourceType: "Condition",
           clinicalStatus: {
             coding: [
               {
                 system: "http://terminology.hl7.org/CodeSystem/condition-clinical",
+                version: "4.0.0",
                 code: "active",
                 display: "Active"
               }
-            ]
+            ],
+            text: "Active"
           },
           verificationStatus: {
             coding: [
               {
                 system: "http://terminology.hl7.org/CodeSystem/condition-ver-status",
-                code: "confirmed",
-                display: "Confirmed"
+                version: "4.0.0",
+                code: "provisional",
+                display: "Provisional"
               }
-            ]
+            ],
+            text: "Provisional"
           },
+          category: [
+            {
+              coding: [
+                {
+                  system: "http://terminology.hl7.org/CodeSystem/condition-category",
+                  code: "problem-list-item",
+                  display: "Problem List Item",
+                },
+              ],
+            },
+          ],
           code: {
             coding: sctCode ? [
               {
@@ -565,12 +594,19 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
                 code: sctCode,
                 display: codeText
               }
-            ] : undefined,
+            ] : [],
             text: codeText
           },
           subject: {
             reference: `Patient/${patientId}`
-          }
+          },
+          // Epic documentation suggests providing an onset date
+          onsetDateTime: new Date().toISOString().split('T')[0],
+          note: [
+            {
+              text: "Condition added via API"
+            }
+          ]
         };
 
         const fhirResponse = await fetch(EPIC_ENDPOINTS.FHIR.CONDITION_CREATE, {
@@ -583,10 +619,13 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           body: JSON.stringify(conditionResource),
         });
 
+        // Extract Location header to help with the "Total 0" debug issue
+        const locationHeader = fhirResponse.headers.get("Location");
+
         const rawText = await fhirResponse.text();
         let data;
         try {
-          data = rawText ? JSON.parse(rawText) : { rawText };
+          data = rawText ? JSON.parse(rawText) : { message: "Resource Created" };
         } catch (e) {
           data = { rawText };
         }
@@ -599,7 +638,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           );
         }
 
-        return NextResponse.json(data, { status: 201 });
+        // Return the location header so the frontend can verify the ID
+        return NextResponse.json({ ...data, fhirId: locationHeader }, { status: 201 });
+
       } catch (err: any) {
         console.error("[CREATE_CONDITION] Error:", err);
         return NextResponse.json(
